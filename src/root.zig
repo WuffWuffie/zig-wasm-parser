@@ -44,6 +44,12 @@ pub const BlockType = enum(i32) {
     pub fn read(reader: *Reader) Reader.Error!BlockType {
         return reader.readEnum(BlockType);
     }
+
+    pub fn format(self: BlockType, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        _ = self;
+        _ = writer;
+        @panic("todo");
+    }
 };
 
 pub const RefType = enum(i7) {
@@ -171,12 +177,14 @@ pub const Reader = struct {
     ptr: [*]const u8,
     end: [*]const u8,
 
+    /// Ensure that there are at least n bytes remaining in the reader, otherwise return an error.
     inline fn ensureBytes(self: *Reader, n: usize) Error!void {
         if (n > @intFromPtr(self.end) - @intFromPtr(self.ptr)) {
             return error.ParseError;
         }
     }
 
+    /// Reads n bytes from the reader and returns a sizeless slice pointing to them, size must be assigned by the caller.
     fn readRaw(self: *Reader, len: usize) Error![*]const u8 {
         try self.ensureBytes(len);
         const ptr = self.ptr;
@@ -263,7 +271,14 @@ pub const Reader = struct {
     }
 
     pub fn readValTypeList(self: *Reader) Error![]const ValueType {
-        return @ptrCast(try self.readSliceDyn());
+        const bytes = try self.readSliceDyn();
+        // Verify that all bytes are valid value types
+        for (bytes) |b| {
+            if (std.enums.fromInt(ValueType, b) == null) {
+                return error.ParseError;
+            }
+        }
+        return @ptrCast(bytes);
     }
 
     pub const inst = op.parse;
@@ -372,6 +387,42 @@ pub const ExportSection = struct {
     }
 };
 
+/// Note: This section reader is streaming and requires careful handling.
+/// Read the element entries one by one using `insts()`, which returns a
+/// reader for the init-expression instructions. Reading past the end of the
+/// init-expression is undefined behavior. After reading the init-expression,
+/// use `funcs()` to create a reader for the function indices.
+///
+/// Example usage:
+///
+/// ```zig
+/// switch (try parser.next()) {
+///     .element => |section_value| {
+///         var section = section_value.element;
+///         while (try section.insts()) |inst_reader| {
+///             var scopes: usize = 0;
+///             while (true) {
+///                 const inst = try inst_reader.inst();
+///                 // Handle instruction...
+///                 switch (inst) {
+///                     .end => {
+///                         if (scopes == 0) break;
+///                         scopes -= 1;
+///                     },
+///                     .block, .loop, .if => scopes += 1,
+///                     .br_table => |table| try table.skip(),
+///                     else => {},
+///                 }
+///             }
+///         }
+///         var func_reader = try section.funcs();
+///         while (try func_reader.next()) |func_index| {
+///             _ = func_index; // Handle function index...
+///         }
+///     },
+///     else => {},
+/// }
+/// ```
 pub const ElementSection = struct {
     reader: Reader,
     count: u32,
@@ -407,6 +458,39 @@ pub const CodeSection = struct {
     }
 };
 
+/// Note: This section reader is streaming and requires careful handling.
+/// Read the memory index first, then use the `reader` field to read the
+/// init-expression instructions until you reach the end of the sub-reader.
+/// Reading past the end is undefined behavior.
+///
+/// Example usage:
+///
+/// ```zig
+/// switch (try parser.next()) {
+///     .data => |section_value| {
+///         var section = section_value.data;
+///         while (try section.memoryIndex()) |memory| {
+///             _ = memory; // Handle memory index... (without multi-memory feature this is always 0)
+///             var scopes: usize = 0;
+///             while (true) {
+///                 const inst = try section.reader.inst();
+///                 // Handle instruction...
+///                 switch (inst) {
+///                     .end => {
+///                         if (scopes == 0) break;
+///                         scopes -= 1;
+///                     },
+///                     .block, .loop, .if => scopes += 1,
+///                     .br_table => |table| try table.skip(), // consume br_table entries
+///                     else => {},
+///                 }
+///             }
+///             _ = try section.data(); // Handle data bytes...
+///         }
+///     },
+///     else => {},
+/// }
+/// ```
 pub const DataSection = struct {
     reader: Reader,
     count: u32,
@@ -422,10 +506,12 @@ pub const DataSection = struct {
     }
 };
 
+/// Unknown and custom sections aren't handled by the parser, instead the parser just returns a reader for the section data and lets the caller decide what to do with it.
 pub const OtherSection = struct {
     kind: SectionKind,
     reader: Reader,
 
+    /// Use this to read the name and data of a custom section. For unknown sections you can ignore the reader or parse it manually as needed.
     pub fn custom(self: *OtherSection) Reader.Error!struct { []const u8, []const u8 } {
         return .{ try self.reader.readSliceDyn(), self.reader.remaining() };
     }
@@ -512,6 +598,10 @@ pub const Parser = struct {
                 .reader = reader,
             } },
             .data_count => .{ .data_count = try reader.readLeb(u32) },
+
+            // For custom and unknown sections we just return the sub-reader and let the caller decide.
+            // For custom sections the caller can call `custom` to read the name and data.
+            // For unknown sections the caller can ignore the reader or parse it as needed.
             else => .{ .other = .{
                 .kind = kind,
                 .reader = reader,

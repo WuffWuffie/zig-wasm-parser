@@ -1,9 +1,17 @@
+//! Defines data structures for instructions with immediate arguments, and the data associated with each instruction.
+
 const std = @import("std");
 const wasm = @import("root.zig");
 const Reader = wasm.Reader;
 
 pub const BlockType = wasm.BlockType;
 
+/// Note: reading this instruction does NOT advance the Reader's position.
+///
+/// The caller is responsible for advancing the reader after calling read.
+///
+/// This avoids allocations in read and lets the returned struct access data lazily
+/// without re-reading or duplicating the underlying bytes.
 pub const BrTable = struct {
     reader: *Reader,
 
@@ -19,6 +27,7 @@ pub const BrTable = struct {
         return BrTable{ .reader = reader };
     }
 
+    /// Branches must be read before the default target, otherwise the reader's position will be incorrect when reading the default target.
     pub fn branches(self: BrTable) Reader.Error!wasm.IdReader {
         return .{
             .count = try self.reader.readLeb(u32),
@@ -26,8 +35,16 @@ pub const BrTable = struct {
         };
     }
 
+    /// The default target is read after reading all branches, otherwise the reader's position will be incorrect when reading the branches.
     pub fn default(self: BrTable) Reader.Error!u32 {
         return try self.reader.readLeb(u32);
+    }
+
+    /// Note: this function advances the reader's position, it should be used only in the case when the caller wants to skip the instruction without reading its data.
+    pub fn skip(self: BrTable) Reader.Error!void {
+        var ids = try self.branches();
+        while (try ids.next()) |_| {}
+        _ = try self.default();
     }
 };
 
