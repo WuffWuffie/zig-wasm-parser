@@ -42,13 +42,19 @@ pub const BlockType = enum(i32) {
     _,
 
     pub fn read(reader: *Reader) Reader.Error!BlockType {
-        return reader.readEnum(BlockType);
+        return @enumFromInt(try reader.readLeb(i32));
     }
 
     pub fn format(self: BlockType, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        _ = self;
-        _ = writer;
-        @panic("todo");
+        switch (self) {
+            .i32 => try writer.writeAll(" (result i32)"),
+            .i64 => try writer.writeAll(" (result i64)"),
+            .f32 => try writer.writeAll(" (result f32)"),
+            .f64 => try writer.writeAll(" (result f64)"),
+            .v128 => try writer.writeAll(" (result v128)"),
+            .empty => {},
+            else => try writer.print(" (type {d})", .{@intFromEnum(self)}),
+        }
     }
 };
 
@@ -231,19 +237,20 @@ pub const Reader = struct {
                 if (shift >= @bitSizeOf(Int)) return error.ParseError;
             }
         } else {
-            var result: UInt = 0;
+            var result: Int = 0;
             var shift: ShiftUInt = 0;
             while (true) {
                 const byte = try self.read(u8);
-                result |= @as(UInt, byte & 0x7F) << shift;
-                if ((byte & 0x80) == 0) {
-                    if (shift < @bitSizeOf(UInt) and (byte & 0x40) != 0) {
-                        result |= ~@as(UInt, 0) << shift;
-                    }
-                    return @bitCast(result);
-                }
+                result |= @as(Int, byte & 0x7F) << shift;
                 shift += 7;
-                if (shift >= @bitSizeOf(UInt)) return error.ParseError;
+                if ((byte & 0x80) == 0) {
+                    // Sign extend if negative
+                    if (shift < @bitSizeOf(Int) and (byte & 0x40) != 0) {
+                        result |= ~@as(Int, 0) << shift;
+                    }
+                    return result;
+                }
+                if (shift >= @bitSizeOf(Int)) return error.ParseError;
             }
         }
     }

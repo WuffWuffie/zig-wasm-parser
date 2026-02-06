@@ -278,11 +278,18 @@ fn dumpWasm(allocator: std.mem.Allocator, out: *std.Io.Writer, source: []const u
 }
 
 pub fn main() !void {
+    var args = std.process.args();
+    const exe = args.next() orelse @panic("expected executable name");
+    const file_path = args.next() orelse {
+        std.debug.print("Usage: {s} <file.wasm>\n", .{exe});
+        return;
+    };
+
     const allocator = std.heap.page_allocator;
 
     const source = try std.fs.cwd().readFileAlloc(
         allocator,
-        "tests/zig-out/bin/tests.wasm",
+        file_path,
         std.math.maxInt(usize),
     );
     defer allocator.free(source);
